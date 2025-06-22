@@ -11,7 +11,7 @@ import json
 
 
 
-def optimizar_con_optuna(train):
+def optimizar_con_optuna(train, version="v1"):
     """
     Optimiza los hiperparámetros de un modelo LightGBM utilizando Optuna.
     """
@@ -89,7 +89,8 @@ def optimizar_con_optuna(train):
             )
             
             y_pred = model.predict(X_val_fold)
-            rmse = mean_squared_error(y_val_fold, y_pred, squared=False)
+            # rmse = mean_squared_error(y_val_fold, y_pred, squared=False)
+            rmse = mean_squared_error(y_val_fold, y_pred)
             rmse_scores.append(rmse)
         
         return np.mean(rmse_scores)
@@ -135,7 +136,7 @@ def optimizar_con_optuna(train):
 
     # Guardar modelo
     # final_model.save_model('modelo_final_lightgbm.txt')
-    guardar_hiperparametros(best_params, "lgb_v1")
+    guardar_hiperparametros(best_params, version)
 
 
 
@@ -323,7 +324,7 @@ def semillerio_en_prediccion_v2(params, train_data, val_data, X_test):
     # Predicción final promediada
     final_pred = np.mean(predictions, axis=0)
         
-        
+    return final_pred    
 
 def semillerio_en_entrenamiento(params, train_data, X_test):
     
