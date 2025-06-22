@@ -1,0 +1,2 @@
+https://github.com/carrenogf/labo3-2025v/blob/main/FRANCISCO/clase4/trivial.ipynb
+https://github.com/milagrosrsaa/mcd_labo3_autoML1/blob/main/4.%20AutoGluon/Exp8%20Modelo%20básico%20-%20Data%20estandarizada.ipynb
