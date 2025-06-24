@@ -204,7 +204,8 @@ def optimizar_con_optuna_con_semillerio(train, semillas=[42, 101, 202, 303, 404]
                 )
 
                 y_pred = model.predict(X_val_fold)
-                rmse = mean_squared_error(y_val_fold, y_pred, squared=False)
+                # rmse = mean_squared_error(y_val_fold, y_pred, squared=False)
+                rmse = mean_squared_error(y_val_fold, y_pred)
                 rmse_seeds.append(rmse)
 
             # Promedio de RMSE para este fold

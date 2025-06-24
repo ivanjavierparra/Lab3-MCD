@@ -1230,37 +1230,72 @@ def dwt_features_serie(df, cant_clusters=50):
 
     return df
 
+
+
 def descomposicion_serie_temporal(df, col='tn'):
-    
     """
-        Descompone la serie temporal en componentes aditivos: tendencia, estacionalidad y residuo.
-    """
+    Descompone la serie temporal en componentes aditivos y multiplicativos,
+    con manejo seguro de ceros/negativos para el modelo multiplicativo.
+    También crea lags estacionalmente ajustados.
     
-    # Descomposición clásica (additiva o multiplicativa)
-    result = seasonal_decompose(df[col].dropna(), model='additive', period=12)
-    df[f'{col}_trend_decomposed_additive'] = result.trend
-    df[f'{col}_seasonal_decomposed_additive'] = result.seasonal
-    df[f'{col}_residual_decomposed_additive'] = result.resid
-    
-    
-    """
-        Descompone la serie temporal en componentes multiplicativos: tendencia, estacionalidad y residuo.
+    Args:
+        df: DataFrame con la serie temporal
+        col: Nombre de la columna a descomponer
+        
+    Returns:
+        DataFrame con las nuevas características añadidas
     """
     
-    # Descomposición clásica (additiva o multiplicativa)
-    result = seasonal_decompose(df[col].dropna(), model='multiplicative', period=12)
-    df[f'{col}_trend_decomposed_multiplicative'] = result.trend
-    df[f'{col}_seasonal_decomposed_multiplicative'] = result.seasonal
-    df[f'{col}_residual_decomposed_multiplicative'] = result.resid
+    for i in [1, 2, 3, 12]:
+        df[f'tn_lag_{i}'] = df.groupby('product_id')['tn'].shift(i)
     
-    # Interacción entre tendencia y estacionalidad
+    # Asegurar que no hay valores nulos
+    serie = df[col].dropna()
+    
+    # --- Descomposición ADITIVA ---
+    result_add = seasonal_decompose(serie, model='additive', period=12)
+    df[f'{col}_trend_decomposed_additive'] = result_add.trend
+    df[f'{col}_seasonal_decomposed_additive'] = result_add.seasonal
+    df[f'{col}_residual_decomposed_additive'] = result_add.resid
+    
+    # --- Descomposición MULTIPLICATIVA (con manejo de ceros/negativos) ---
+    # Pre-procesamiento para modelo multiplicativo
+    serie_mult = serie.copy()
+    
+    # 1. Manejar ceros (reemplazar con valor pequeño)
+    min_positivo = serie[serie > 0].min() / 2  # Mitad del mínimo valor positivo
+    serie_mult = np.where(serie <= 0, min_positivo, serie)
+    
+    # 2. Aplicar descomposición
+    result_mult = seasonal_decompose(serie_mult, model='multiplicative', period=12)
+    
+    # 3. Almacenar resultados
+    df[f'{col}_trend_decomposed_multiplicative'] = result_mult.trend
+    df[f'{col}_seasonal_decomposed_multiplicative'] = result_mult.seasonal
+    df[f'{col}_residual_decomposed_multiplicative'] = result_mult.resid
+    
+    # --- Interacciones ---
+    df[f'{col}_trend'] = df[col].rolling(window=12, min_periods=1).mean()
+    
+    # Interacción tendencia-estacionalidad
     df[f'{col}_trend_season_interaction_additive'] = df[f'{col}_trend'] * df[f'{col}_seasonal_decomposed_additive']
     df[f'{col}_trend_season_interaction_multiplicative'] = df[f'{col}_trend'] * df[f'{col}_seasonal_decomposed_multiplicative']
-
-    # Interacción lags con estacionalidad
+    
+    # --- Lags estacionalmente ajustados ---
     for i in [1, 2, 3, 12]:
-        df[f'{col}_lag_{i}_season_adj_add'] = df[f'{col}_lag_{i}'] / df[f'{col}_seasonal_decomposed_additive']
-        df[f'{col}_lag_{i}_season_adj_mul'] = df[f'{col}_lag_{i}'] / df[f'{col}_seasonal_decomposed_multiplicative']
+        # Versión aditiva
+        seasonal_add = df[f'{col}_seasonal_decomposed_additive']
+        df[f'{col}_lag_{i}_season_adj_add'] = df[f'{col}_lag_{i}'] / seasonal_add.replace(0, 1)
+        
+        # Versión multiplicativa (con manejo seguro)
+        seasonal_mult = df[f'{col}_seasonal_decomposed_multiplicative']
+        # Reemplazar ceros/negativos con 1 (elemento neutro)
+        seasonal_mult_safe = np.where(seasonal_mult <= 0, 1, seasonal_mult)
+        df[f'{col}_lag_{i}_season_adj_mul'] = df[f'{col}_lag_{i}'] / seasonal_mult_safe
+        
+        # Normalización opcional
+        df[f'{col}_lag_{i}_season_adj_add_norm'] = (df[f'{col}_lag_{i}_season_adj_add'] - df[f'{col}_lag_{i}_season_adj_add'].mean()) / df[f'{col}_lag_{i}_season_adj_add'].std()
+        df[f'{col}_lag_{i}_season_adj_mul_norm'] = (df[f'{col}_lag_{i}_season_adj_mul'] - df[f'{col}_lag_{i}_season_adj_mul'].mean()) / df[f'{col}_lag_{i}_season_adj_mul'].std()
     
     return df
 
