@@ -1,0 +1,18 @@
+{
+    "num_leaves": 156,
+    "learning_rate": 0.06757473563819746,
+    "feature_fraction": 0.9311066999913749,
+    "bagging_fraction": 0.5908431037169181,
+    "bagging_freq": 4,
+    "lambda_l1": 4.593598725153723e-07,
+    "lambda_l2": 1.040975340922546,
+    "min_child_samples": 12,
+    "max_depth": 14,
+    "max_bin": 106,
+    "min_data_in_leaf": 92,
+    "extra_trees": true,
+    "objective": "regression",
+    "metric": "rmse",
+    "boosting_type": "gbdt",
+    "verbosity": -1
+}
