@@ -52,7 +52,7 @@ def get_lags(df, col, hasta=201912):
     return df
 
 
-def get_lagsEspecificos(df, lags=[1, 2, 3, 6, 12, 24], col='tn'):
+def get_lags_especificos(df, lags=[1, 2, 3, 6, 12, 24], col='tn'):
     """
     Calcula lags específicos de la columna indicada por 'col' hasta la fecha indicada.
     """
@@ -68,44 +68,53 @@ def get_lagsEspecificos(df, lags=[1, 2, 3, 6, 12, 24], col='tn'):
     return df
 
 
-def get_delta_lags(df, col, hasta=201912):
+def get_delta_lags(df, columna='tn', cantidad=24):
     """
     Calcula los delta lags (diferencias entre lags consecutivos) para la columna 'col'.
+    PRECONDICION: requiere que esten los lags creados.
     """
     
     # Ordenar
     df = df.sort_values(['product_id', 'periodo'])
+    df_resultado = df.copy()
     
+    lags = {}
     
-    lags = calcular_cantidad_lags(201701, hasta)
-
-    # Calcular delta lags
-    for i in range(1, lags):
-        lag_actual = i
-        lag_anterior = i - 1
-        if (lag_anterior == 0): continue
-        df[f'{col}_delta_lag_{lag_actual}'] = df[f'{col}_lag_{lag_actual}'] - df[f'{col}_lag_{lag_anterior}']
+    # Generar lags
+    for i in range(1, cantidad + 1):
+        lags[f'lag{i}'] = df_resultado.groupby('product_id')[columna].shift(i)
     
-    return df
+    # Calcular diferencias
+    for i in range(1, cantidad):
+        for j in range(i + 1, cantidad + 1):
+            df_resultado[f'{columna}_delta_lag{i}_lag{j}'] = lags[f'lag{i}'] - lags[f'lag{j}']
+    
+    return df_resultado
 
 
-def get_delta_lags_especificos(df, lags=[1, 2, 3, 6, 12, 24], col='tn'):
+def add_delta_ma_ratios(df, col, max_lag):
     """
-    Calcula los delta lags (diferencias entre lags específicos) para la columna 'col'.
+    Crea features de la forma: (col_t - col_t-lag) / media_movil_t(lag)
+    para lag en 1..max_lag.
     """
+    df = df.copy()
     
-    # Ordenar
-    df = df.sort_values(['product_id', 'periodo'])
-    
-    # Calcular delta lags específicos
-    for i in range(1, len(lags)):
-        lag_actual = lags[i]
-        lag_anterior = lags[i - 1]
-        if (lag_anterior == 0): continue
-        df[f'{col}_delta_lag_{lag_actual}'] = df[f'{col}_lag_{lag_actual}'] - df[f'{col}_lag_{lag_anterior}']
-    
-    return df
+    for lag in range(1, max_lag + 1):
+        delta_col = f"{col}_delta_lag{lag}"
+        ma_col = f"{col}_ma_lag{lag}"
+        ratio_col = f"{col}_delta_div_ma_lag{lag}"
 
+        # Delta: x_t - x_{t-lag}
+        df[delta_col] = df[col] - df[col].shift(lag)
+
+        # Media móvil: promedio de los últimos lag valores hasta t (inclusive)
+        df[ma_col] = df[col].rolling(window=lag).mean()
+
+        # Ratio = delta / media_movil
+        df[ratio_col] = df[delta_col] / (df[ma_col] + 1e-5)  # evitar división por cero
+
+    return df
+        
 
 def get_rolling_means(df, col, hasta=201912):
     """
@@ -1157,15 +1166,15 @@ def get_neural_prophet_features(df_entrada):
 
 def correlacion_exogenas(df):
     # Correlación móvil entre tn_zscore y dolar (ventana de 12 meses)
-    df['corr_tn_dolar'] = df['tn_zscore'].rolling(window=12).corr(df['dolar'])
+    df['corr_tn_dolar'] = df['tn'].rolling(window=12).corr(df['dolar'])
 
-    # Correlación móvil entre tn_zscore e ipc
-    df['corr_tn_ipc'] = df['tn_zscore'].rolling(window=12).corr(df['ipc'])
+    # Correlación móvil entre tn e ipc
+    df['corr_tn_ipc'] = df['tn'].rolling(window=12).corr(df['ipc'])
     
-    # Correlación entre tn_zscore y dolar para cada producto_id
+    # Correlación entre tn y dolar para cada producto_id
     # Calcular correlación por grupo
     corr_df = df.groupby('product_id').apply(
-        lambda g: g['tn_zscore'].corr(g['dolar'])
+        lambda g: g['tn'].corr(g['dolar'])
     ).reset_index(name='corr_tn_dolar_x_prod')
 
     # Unir al DataFrame original
@@ -1327,7 +1336,7 @@ def chatGPT_features_serie(df, col):
 
     
     ## 10. Características de aceleración/deceleración
-    df[f'{col}_acceleration'] = df[f'{col}_delta_lag_2'].diff(1)  # Cambio en la tasa de cambio
+    # df[f'{col}_acceleration'] = df[f'{col}_delta_lag_2'].diff(1)  # Cambio en la tasa de cambio
     
     """ 
         Calcula estadísticas de ventana dinámica para la columna col.
@@ -1359,14 +1368,14 @@ def chatGPT_features_serie(df, col):
         Calcula características de cambio de régimen para la columna col.
     """
     # Z-Score respecto a ventana móvil
-    df[f'{col}_zscore_6'] = (df[col] - df[f'{col}_rolling_mean_6']) / df[f'{col}_rolling_std_6']
+    df[f'{col}_ratio_mean6_std6'] = (df[col] - df[f'{col}_rolling_mean_6']) / df[f'{col}_rolling_std_6']
 
     # Detección de outliers
-    df[f'{col}_is_outlier_3sigma'] = np.where(np.abs(df[f'{col}_zscore_6']) > 3, 1, 0)
+    df[f'{col}_is_outlier_3sigma'] = np.where(np.abs(df[f'{col}']) > 3, 1, 0)
 
     # Cambios bruscos (spikes)
-    df[f'{col}_spike_up'] = np.where(df[f'{col}_delta_lag_2'] > df[f'{col}_rolling_std_3'], 1, 0)
-    df[f'{col}_spike_down'] = np.where(df[f'{col}_delta_lag_2'] < -df[f'{col}_rolling_std_3'], 1, 0)
+    # df[f'{col}_spike_up'] = np.where(df[f'{col}_delta_lag_2'] > df[f'{col}_rolling_std_3'], 1, 0)
+    # df[f'{col}_spike_down'] = np.where(df[f'{col}_delta_lag_2'] < -df[f'{col}_rolling_std_3'], 1, 0)
     
     """
         Calcula características de cambio de régimen para la columna col.
@@ -1403,7 +1412,212 @@ def chatGPT_features_serie(df, col):
 
 
 
+def calcular_promedios_12m(lista_productos, df):
+    """
+    Calcula el promedio de los últimos 12 meses para una lista de productos
+    
+    Args:
+        lista_productos (list): Lista de product_id a analizar
+        df (pd.DataFrame): DataFrame con los datos históricos
+        fecha_referencia (str/datetime): Fecha de referencia (opcional)
+    
+    Returns:
+        pd.DataFrame: Resultados con product_id y promedio
+    """
+    # Convertir a datetime si no lo está
+    df = df.copy()
+   
+    
+    # Filtrar el rango de fechas
+    df_rango = df[(df['periodo'] >= 201901) & (df['periodo'] <= 201912)]
+    
+    # Función auxiliar para calcular por producto
+    def calcular_promedio(product_id):
+        datos_producto = df_rango[df_rango['product_id'] == product_id]
+        return datos_producto['tn'].mean() if not datos_producto.empty else None
+    
+    # Aplicar a todos los productos de la lista
+    resultados = pd.DataFrame({
+        'product_id': lista_productos,
+        'promedio_12m': [calcular_promedio(pid) for pid in lista_productos]
+    })
+    
+    return resultados
+
+
+
+############################################
+########## Nuevas F 27/06/2025 #############
+############################################
+
+
+def create_ratio_features(df):
+    # Ratios entre features existentes importantes
+    df['tn_to_stock_ratio'] = df['tn'] / (df['stock_final'] + 1e-6)
+    df['cust_request_ratio'] = df['cust_request_tn'] / (df['cust_request_qty'] + 1e-6)
+    df['tn_plan_ratio'] = df['tn'] / (df['plan_precios_cuidados'] + 1e-6)
+    
+    # Interacciones entre features importantes
+    df['tn_x_cust_request'] = df['tn'] * df['cust_request_qty']
+    df['stock_x_plan_precios'] = df['stock_final'] * df['plan_precios_cuidados']
+    
+    # Normalización por tamaño de SKU
+    df['tn_per_sku_size'] = df['tn'] / (df['sku_size'] + 1e-6)
+    
+    return df
+
+
+
+def enhance_lifecycle_features(df):
+    # Proporción de vida restante del producto
+    df['life_remaining_ratio'] = (df['total_meses'] - df['mes_n']) / (df['total_meses'] + 1e-6)
+    
+    # Etapas del ciclo de vida (basado en percentiles)
+    df['life_stage'] = pd.qcut(df['mes_n'], q=4, labels=[1, 2, 3, 4])
+    
+    # Velocidad de ventas en relación al ciclo de vida
+    df['tn_life_velocity'] = df['tn'] / (df['mes_n'] + 1)
+    
+    return df
+
+
+
+def create_category_features(df):
+    # Promedio de ventas por categoría nivel 2
+    cat2_avg = df.groupby(['periodo', 'cat2'])['tn'].transform('mean')
+    df['cat2_avg_tn'] = cat2_avg
+    
+    # Ratio entre ventas del producto y promedio de su categoría
+    df['tn_vs_cat2'] = df['tn'] / (cat2_avg + 1e-6)
+    
+    # Posición relativa en la categoría
+    df['cat2_rank'] = df.groupby(['periodo', 'cat2'])['tn'].rank(pct=True)
+    
+    return df
+
+
+def create_regime_features(df):
+    # Detección de cambios bruscos usando Z-score
+    rolling_mean = df.groupby('product_id')['tn'].transform(lambda x: x.rolling(6).mean())
+    rolling_std = df.groupby('product_id')['tn'].transform(lambda x: x.rolling(6).std())
+    df['tn_zscore'] = (df['tn'] - rolling_mean) / (rolling_std + 1e-6)
+    
+    # Flags para cambios significativos
+    df['positive_shock'] = (df['tn_zscore'] > 2).astype(int)
+    df['negative_shock'] = (df['tn_zscore'] < -2).astype(int)
+    
+    return df
 
 
 
 
+def create_nonlinear_trends(df):
+    # Transformaciones no lineales de tendencias
+    df['tn_log'] = np.log1p(df['tn'])
+    df['tn_sqrt'] = np.sqrt(df['tn'])
+    
+    # Cambio porcentual acumulado
+    df['tn_pct_change'] = df.groupby('product_id')['tn'].pct_change()
+    df['tn_pct_change_3m'] = df.groupby('product_id')['tn'].pct_change(3)
+    
+    return df
+
+
+
+def create_temporal_interactions(df):
+    # Interacción entre estacionalidad y ciclo de vida
+    df['month_life_interaction'] = df['month'] * df['life_remaining_ratio']
+    
+    # Interacción entre tendencia y eventos políticos
+    political_events = ['elecciones_legislativas_1', 'crisis_cambiaria_1', 'las_paso_2019_1']
+    for event in political_events:
+        df[f'tn_{event}_interaction'] = df['tn'] * df[event]
+    
+    return df
+
+
+
+def create_asymmetric_window_features(df):
+    # Ratio entre últimos 3 meses y los 3 meses anteriores
+    df['tn_last3_vs_prev3'] = (
+        df.groupby('product_id')['tn']
+        .transform(lambda x: x.rolling(3).mean() / x.shift(3).rolling(3).mean())
+    )
+    
+    # Aceleración de ventas (cambio en la tasa de cambio)
+    df['tn_acceleration'] = (
+        df.groupby('product_id')['tn']
+        .transform(lambda x: x.diff().diff())
+    )
+    
+    return df
+    
+    
+def recomendaciones_deepseek(df):
+    
+    """
+    Tus features yearly_add y trend_add son las más importantes. Podrías crear interacciones entre ellas:
+    """
+    df['yearly_trend_interaction'] = df['yearly_add'] * df['trend_add']
+    
+    """
+    Mejorar features estacionales: Ya que tn_seasonal_naive es importante, podrías añadir:
+    """
+    df['seasonal_naive_ratio'] = df['tn'] / (df['tn_seasonal_naive'] + 1e-6)
+    """
+    Features de error de predicción simple:
+    """
+    df['naive_forecast_error'] = df['tn'] - df['tn_naive_forecast']
+    """
+    Combinar features de importancia media:
+    """
+    df['trend_season_std_interaction'] = df['trend_add'] * df['tn_rolling_std_6']
+    
+    return df
+
+
+def get_nuevas_features(df):
+    """
+    Crea nuevas features derivadas de lags, medias móviles, desvíos, Prophet y estadísticas acumuladas.
+
+    Requiere:
+    - Lags: tn_lag_1, tn_lag_2, tn_lag_3, tn_lag_4
+    - Medias móviles: tn_rolling_mean_3, tn_rolling_mean_6
+    - Mediana móvil: tn_rolling_median_3
+    - Desvíos móviles: tn_rolling_std_3, tn_rolling_std_6, tn_rolling_std_12
+    - Deltas: tn_delta_lag1_lag2, tn_delta_lag2_lag3, tn_delta_lag3_lag4
+    - Componente Prophet: trend_add
+
+    Devuelve:
+    - DataFrame con nuevas columnas calculadas
+    """
+    df = df.copy()
+
+    # Ratios entre lags y rolling windows
+    df['tn_lag1_div_lag2'] = df['tn_lag_1'] / (df['tn_lag_2'] + 1e-5)
+    df['tn_lag1_div_rolling_mean3'] = df['tn_lag_1'] / (df['tn_rolling_mean_3'] + 1e-5)
+    df['tn_lag2_minus_rolling_median3'] = df['tn_lag_2'] - df['tn_rolling_median_3']
+
+    # Aceleración: segunda derivada de deltas
+    df['tn_acceleration_1_2'] = df['tn_delta_lag1_lag2'] - df['tn_delta_lag2_lag3']
+    df['tn_acceleration_2_3'] = df['tn_delta_lag2_lag3'] - df['tn_delta_lag3_lag4']
+
+    # Volatilidad relativa
+    df['tn_volatility_ratio_3_12'] = df['tn_rolling_std_3'] / (df['tn_rolling_std_12'] + 1e-5)
+
+    # Crecimiento compuesto
+    df['tn_log_return_1'] = np.log1p(df['tn']) - np.log1p(df['tn_lag_1'])
+    df['tn_log_return_3'] = np.log1p(df['tn']) - np.log1p(df['tn_lag_3'])
+
+    # Z-score móviles personalizados
+    df['tn_zscore_6'] = (df['tn'] - df['tn_rolling_mean_6']) / (df['tn_rolling_std_6'] + 1e-5)
+
+    # Momentum acumulado
+    df['tn_momentum_3'] = df['tn'] - df['tn_lag_3']
+    df['tn_momentum_vs_ma'] = df['tn_momentum_3'] / (df['tn_rolling_mean_3'] + 1e-5)
+
+    # Diferencia con tendencia Prophet
+    df['tn_minus_trend_add'] = df['tn'] - df['trend_add']
+    df['tn_trend_add_ratio'] = df['tn'] / (df['trend_add'] + 1e-5)
+
+    return df

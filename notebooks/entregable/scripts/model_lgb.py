@@ -2,7 +2,9 @@ import pandas as pd
 import numpy as np
 import optuna
 import lightgbm as lgb
-from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from lightgbm import early_stopping, log_evaluation
 from sklearn.model_selection import TimeSeriesSplit
 from optuna.storages import RDBStorage
 from optuna.artifacts import FileSystemArtifactStore, upload_artifact
@@ -504,3 +506,424 @@ def total_forecast_error(df):
     denominador = df['target'].sum()
     
     return numerador / denominador
+
+
+
+#### Más Rústico #################################################
+
+def entrenar_rustico(df_train, df_val, df_test, features):
+    
+    def objective(trial):
+        params = {
+            'max_depth': trial.suggest_int('max_depth', 3, 20),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
+            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+            'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+            'objective': 'regression',
+            'boosting_type': 'gbdt',
+            'random_state': 42
+        }
+
+        X = df_train.drop(columns=['target'])
+        y = df_train['target']
+        # sw = df_train['tn']
+        # sw = df_train['tn'].clip(lower=1e-5)
+        sw = df_train['tn_scaled']
+
+        tscv = TimeSeriesSplit(n_splits=5, max_train_size=24 , test_size=2 )
+        maes = []
+        for train_idx, val_idx in tscv.split(X):
+            X_train_fold = X.iloc[train_idx]
+            y_train_fold = y.iloc[train_idx]
+            sw_train_fold = sw.iloc[train_idx]
+
+            X_val_fold = X.iloc[val_idx]
+            y_val_fold = y.iloc[val_idx]
+
+            model = lgb.LGBMRegressor(**params)
+            model.fit(
+                X_train_fold, y_train_fold,
+                sample_weight=sw_train_fold,
+                eval_set=[(X_val_fold, y_val_fold)],
+                eval_metric="mae",
+                callbacks=[
+                    early_stopping(stopping_rounds=50),
+                    log_evaluation(0)  # cambiar a 100 si querés ver progreso cada 100 iteraciones
+                ]
+            )
+            pred = model.predict(X_val_fold)
+            maes.append(mean_absolute_error(y_val_fold, pred))
+
+        return np.mean(maes)
+
+
+    # Crear un estudio de Optuna
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=20)
+
+
+    best_params = study.best_params
+    best_params.update({
+        'objective': 'regression',
+        'boosting_type': 'gbdt',
+        'random_state': 42
+    })
+
+    # Imprimir los mejores hiperparámetros
+    print("Mejores hiperparámetros: ", study.best_params)
+    print("Mejor MAE: ", study.best_value)
+
+    model_val = lgb.LGBMRegressor(**best_params)
+    model_val.fit(
+        df_train[features], df_train['target'],
+        sample_weight=df_train['tn_scaled']
+    )
+
+    y_val_pred = model_val.predict(df_val[features])
+    mae_val = mean_absolute_error(df_val['target'], y_val_pred)
+    print(f"MAE en validación externa (201909–201910): {mae_val:.4f}")
+    
+    df_fit = pd.concat([df_train, df_val])
+
+    model_final = lgb.LGBMRegressor(**best_params)
+    model_final.fit(
+        df_fit[features], df_fit['target'],
+        sample_weight=df_fit['tn_scaled']
+    )
+
+    y_test_pred = model_final.predict(df_test[features])
+    mae_test = mean_absolute_error(df_test['target'], y_test_pred)
+    print(f"MAE en test final (201911–201912): {mae_test:.4f}")
+
+
+
+
+
+
+
+
+
+##### Más PRO ####################################################
+
+def evaluate_model(df, periodos_train, periodos_val, features, params, 
+                   seeds=[42, 123, 456], use_cv=True, n_splits=5, verbose=False):
+    """
+    Evalúa un modelo con múltiples semillas. Usa CV temporal interna si use_cv=True.
+    """
+    df_train = df[df['periodo'].isin(periodos_train)].copy()
+    df_val = df[df['periodo'].isin(periodos_val)].copy()
+    
+    # Validaciones básicas
+    if df_train.empty or df_val.empty:
+        raise ValueError("Train o Val está vacío.")
+
+    
+
+    X_train = df_train[features]
+    y_train = df_train['target']
+    ### Peso
+    sw_train = df_train['tn_scaled']
+    # df_train['tn'] = pd.to_numeric(df_train['tn'], errors='coerce').fillna(1e-5).clip(lower=1e-5)
+
+    X_val = df_val[features]
+    y_val = df_val['target']
+
+    if use_cv:
+        cv_maes = []
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+
+        for fold, (train_idx, val_idx) in enumerate(tscv.split(X_train)):
+            fold_maes = []
+
+            for seed in seeds:
+                model = lgb.LGBMRegressor(**params, random_state=seed)
+                model.fit(
+                    X_train.iloc[train_idx], y_train.iloc[train_idx],
+                    sample_weight=sw_train.iloc[train_idx],
+                    eval_set=[(X_train.iloc[val_idx], y_train.iloc[val_idx])],
+                    eval_metric="mae",
+                    callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+                )
+                pred = model.predict(X_train.iloc[val_idx])
+                fold_maes.append(mean_absolute_error(y_train.iloc[val_idx], pred))
+
+            cv_maes.append(np.mean(fold_maes))
+        
+        mae_cv = np.mean(cv_maes)
+        if verbose:
+            print(f"CV MAE: {mae_cv:.4f}")
+    else:
+        mae_cv = None
+
+    # Entrenamiento final con todo el set de train
+    final_preds = []
+    models = []
+
+    for seed in seeds:
+        model = lgb.LGBMRegressor(**params, random_state=seed)
+        model.fit(
+            X_train, y_train,
+            sample_weight=sw_train,
+            eval_set=[(X_val, y_val)],
+            eval_metric="mae",
+            callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+        )
+        pred = model.predict(X_val)
+        final_preds.append(pred)
+        models.append(model)
+
+    ensemble_pred = np.mean(final_preds, axis=0)
+    mae_val = mean_absolute_error(y_val, ensemble_pred)
+
+    if verbose:
+        print(f"Ensemble MAE Val: {mae_val:.4f}")
+
+    return mae_cv if use_cv else mae_val, models, ensemble_pred
+
+
+
+def create_objective(df, periodos_train, periodos_val, features, use_cv=True):
+    """ 
+    Crea una función objetivo para Optuna que evalúa un modelo LightGBM.
+    Esta función se utiliza para la optimización de hiperparámetros.
+    """
+    def objective(trial):
+        params = {
+            'max_depth': trial.suggest_int('max_depth', 3, 20),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+            'min_child_samples': trial.suggest_int('min_child_weight', 1, 10) * 5,
+            'bagging_fraction': trial.suggest_float('subsample', 0.5, 1.0),
+            'bagging_freq': 1,
+            'feature_fraction': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 1.0),
+            'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 1.0),
+            'boosting_type': 'gbdt',
+            'objective': 'regression',
+            'metric': 'mae',
+            'verbosity': -1,
+            'deterministic': True,
+            'force_col_wise': True
+            # 'linear_tree': True ##### CUIDADO!!!
+        }
+
+        try:
+            mae, _, _ = evaluate_model(df, periodos_train, periodos_val, features, params, use_cv=use_cv)
+            return mae
+        except Exception as e:
+            print(f"Trial error: {e}")
+            return float("inf")
+    return objective
+
+
+
+
+def run_bayesian_optimization(df, periodos_train, periodos_val, periodos_test,
+                              n_trials=20, use_cv=True):
+    """ 
+    Ejecuta la optimización bayesiana de hiperparámetros para LightGBM.
+    
+    """
+    features = [col for col in df.columns if col not in ['target']]
+    print(f"Features: {features}")
+
+    objective = create_objective(df, periodos_train, periodos_val, features, use_cv=use_cv)
+
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=42))
+    study.optimize(objective, n_trials=n_trials)
+
+    best_params = study.best_params
+    best_params.update({
+        # 'min_child_samples': best_params.pop('min_child_weight') * 5,
+        # 'bagging_fraction': best_params.pop('subsample'),
+        # 'bagging_freq': 1,
+        # 'feature_fraction': best_params.pop('colsample_bytree'),
+        'boosting_type': 'gbdt',
+        'objective': 'regression',
+        'metric': 'mae',
+        'verbosity': -1,
+        'deterministic': True,
+        'force_col_wise': True
+        # 'linear_tree': True ##### CUIDADO!!!
+    })
+
+    print("\n🏆 Mejores parámetros:")
+    for k, v in best_params.items():
+        print(f"{k}: {v}")
+
+    # Entrenamiento final
+    print("\nEntrenando modelo final...")
+    mae_val, models, _ = evaluate_model(df, periodos_train, periodos_val, features, best_params, use_cv=False, verbose=True)
+
+    # Evaluación en test
+    df_test = df[df['periodo'].isin(periodos_test)].copy()
+    if df_test.empty:
+        print("No hay datos de test")
+        return study, models, None
+
+    X_test = df_test[features]
+    y_test = df_test['target']
+
+    preds = [model.predict(X_test) for model in models]
+    ensemble_pred = np.mean(preds, axis=0)
+    mae_test = mean_absolute_error(y_test, ensemble_pred)
+
+    print(f"\n🎯 MAE Test Ensemble: {mae_test:.4f}")
+
+    return study, models, {
+        'mae_val': mae_val,
+        'mae_test': mae_test,
+        'ensemble_pred': ensemble_pred,
+        'best_params': best_params
+    }
+
+
+
+def main_entrenar(df, VERSION="v12"):
+    """ 
+    Entrena un modelo LightGBM con optimización bayesiana y semillerío.
+    """
+    scaler = MinMaxScaler(feature_range=(1, 100))
+    df['tn_scaled'] = scaler.fit_transform(df[['tn']])
+    
+    # Configurar períodos
+    periodos_train  = [ 201701, 201702, 201703, 201704, 201705, 201706, 201707, 201708, 201709, 201710, 201711, 201712,
+                        201801, 201802, 201803, 201804, 201805, 201806, 201807, 201808, 201809, 201810, 201811, 201812,
+                        201901, 201902, 201903, 201904, 201905, 201906, 201907, 201908, 201909, 201910  ]
+    periodos_val    = [ 201907, 201908  ]
+    periodos_test   = [ 201909, 201910  ]
+
+    # Ejecutar optimización
+    study, models, results = run_bayesian_optimization(
+        df=df,
+        periodos_train=periodos_train,
+        periodos_val=periodos_val,
+        periodos_test=periodos_test,
+        n_trials=50,
+        use_cv=True  # True = validación cruzada temporal dentro de train
+    )
+
+    # Análisis adicional
+    print("\nTop 5 mejores trials:")
+    top_trials = study.trials_dataframe().nsmallest(5, 'value')
+    for i, (_, row) in enumerate(top_trials.iterrows(), 1):
+        print(f"{i}. MAE: {row['value']:.4f}")
+
+    guardar_hiperparametros(study.best_params, VERSION)
+    
+    return study, models, results
+
+
+
+
+
+def predict_with_ensemble(models, df_future, features):
+    """
+    Realiza predicción con ensemble (promedio) sobre un nuevo dataset.
+    """
+    if df_future.empty:
+        raise ValueError("El dataframe de predicción está vacío.")
+
+    X_future = df_future[features]
+
+    # Promedio de predicciones de todas las semillas
+    preds = [model.predict(X_future) for model in models]
+    ensemble_pred = np.mean(preds, axis=0)
+
+    return ensemble_pred
+
+
+
+
+######################################################
+
+def promedio_12_meses_780p():
+    
+    df = pd.read_csv("./datasets/periodo_x_producto_con_target.csv", sep=',', encoding='utf-8')
+    df = df[df['periodo'] >= 201901]  # Filtrar desde 201901
+    
+    productos_ok = pd.read_csv("https://storage.googleapis.com/open-courses/austral2025-af91/labo3v/product_id_apredecir201912.txt", sep="\t")
+
+    df = df.merge(productos_ok, on='product_id', how='inner')
+    
+    df = df.groupby('product_id').agg({'tn': 'mean'}).reset_index()
+    
+    return df
+    
+
+def feature_importance(df, models, nro_experimento):
+    
+    df_aux = df.drop(columns=['target'])
+
+
+    models_aux = models.copy()
+    count = 1
+
+    for model in models_aux:
+        
+        
+        feature_importances = pd.DataFrame({
+            'feature': df_aux.columns,
+            'importance':  model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        
+        
+        feature_importances.to_csv(f"./feature_importance/exp{nro_experimento}_{count}.csv", index=False, sep=',')
+        count += 1
+    
+    
+def feature_importance_promedio(models, features):
+    """
+    Versión que maneja modelos con diferente número de características
+    """
+    if not models:
+        raise ValueError("La lista de modelos está vacía")
+    
+    # Crear un diccionario para acumular importancias por nombre de feature
+    importance_dict = {feature: 0.0 for feature in features}
+    model_count = 0
+    
+    for model in models:
+        try:
+            # Obtener nombres e importancias según el modelo
+            if hasattr(model, 'feature_importances_'):
+                model_features = features  # Asumiendo que son las mismas
+                model_imp = model.feature_importances_
+            elif hasattr(model, 'get_booster'):  # Para XGBoost
+                model_features = model.get_booster().feature_names
+                model_imp = model.feature_importances_
+            else:
+                continue
+                
+            # Normalizar importancias
+            model_imp = model_imp / model_imp.sum()
+            
+            # Acumular por nombre de feature
+            for feature, imp in zip(model_features, model_imp):
+                if feature in importance_dict:
+                    importance_dict[feature] += imp
+            
+            model_count += 1
+            
+        except Exception as e:
+            print(f"Error procesando modelo: {str(e)}")
+            continue
+    
+    if model_count == 0:
+        raise ValueError("Ningún modelo válido encontrado")
+    
+    # Calcular promedio
+    importance_dict = {k: v/model_count for k, v in importance_dict.items()}
+    
+    # Crear DataFrame
+    importance_df = pd.DataFrame({
+        'feature': importance_dict.keys(),
+        'importance': importance_dict.values()
+    }).sort_values('importance', ascending=False)
+    
+    return importance_df
