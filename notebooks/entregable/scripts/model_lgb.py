@@ -164,19 +164,24 @@ def optimizar_con_optuna_con_semillerio(train, semillas=[42, 101, 202, 303, 404]
             'objective': 'regression',
             'metric': 'rmse',
             'boosting_type': 'gbdt',
-            'num_leaves': trial.suggest_int('num_leaves', 15, 200),
+            'num_leaves': trial.suggest_int('num_leaves', 15, 100),  # Reducido de 200 a 100
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-            'feature_fraction': trial.suggest_float('feature_fraction', 0.5, 1.0),
-            'bagging_fraction': trial.suggest_float('bagging_fraction', 0.5, 1.0),
+            'feature_fraction': trial.suggest_float('feature_fraction', 0.6, 1.0),  # Aumentado mínimo a 0.6
+            'bagging_fraction': trial.suggest_float('bagging_fraction', 0.7, 1.0),  # Aumentado mínimo a 0.7
             'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
             'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 10.0, log=True),
             'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 10.0, log=True),
-            'min_child_samples': trial.suggest_int('min_child_samples', 1, 50),
-            'max_depth': trial.suggest_int('max_depth', 3, 15),
+            'min_child_samples': trial.suggest_int('min_child_samples', 10, 50),  # Aumentado mínimo a 10
+            'max_depth': trial.suggest_int('max_depth', 3, 10),  # Reducido de 15 a 10
             'max_bin': trial.suggest_int('max_bin', 100, 500),
-            'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 1, 100),
+            'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 20, 100),  # Aumentado mínimo a 20
             'extra_trees': trial.suggest_categorical('extra_trees', [True, False]),
-            'verbosity': -1
+            'verbosity': -1,
+            
+            # Hiperparámetros adicionales recomendados:
+            'early_stopping_rounds': trial.suggest_int('early_stopping_rounds', 10, 50),  # Nuevo
+            'path_smooth': trial.suggest_float('path_smooth', 0.0, 1.0),  # Nuevo (suaviza divisiones)
+            'min_gain_to_split': trial.suggest_float('min_gain_to_split', 0.0, 0.5),  # Nuevo
         }
 
         rmse_scores_fold = []
@@ -200,7 +205,7 @@ def optimizar_con_optuna_con_semillerio(train, semillas=[42, 101, 202, 303, 404]
                     num_boost_round=1000,
                     valid_sets=[val_data],
                     callbacks=[
-                        lgb.early_stopping(stopping_rounds=50, verbose=False),
+                        lgb.early_stopping(stopping_rounds=10, verbose=False),
                         lgb.log_evaluation(0)
                     ]
                 )
@@ -219,7 +224,7 @@ def optimizar_con_optuna_con_semillerio(train, semillas=[42, 101, 202, 303, 404]
         print(f"Mejor trial hasta ahora: RMSE={study.best_value:.4f}, Parámetros={study.best_trial.params}")
 
     study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=50, callbacks=[print_best_trial], timeout=3600)
+    study.optimize(objective, n_trials=100, callbacks=[print_best_trial], timeout=3600)
 
     print("Mejores hiperparámetros:", study.best_params)
 
