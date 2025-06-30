@@ -410,6 +410,9 @@ def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 4
 
 
 
+
+
+
  
 def semillerio_en_prediccion(train, test, version="v1"):
     """
@@ -483,7 +486,105 @@ def semillerio_en_prediccion(train, test, version="v1"):
     
     return result_df
     
+
+def semillerio_en_prediccion_con_pesos(train, test, version="v1"):
+    """
+    Entrena un modelo LightGBM con múltiples semillas y promedia las predicciones.
+    Versión que incluye pesos consistentes con el entrenamiento original.
+    """
+    # Preparación de datos
+    datetime_cols = train.select_dtypes(include=['datetime', 'datetime64']).columns.tolist()
+    X_train = train.drop(columns=[*datetime_cols, 'target'])
+    y_train = train['target']
+    X_test = test.drop(columns=[*datetime_cols, 'target'])
     
+    # Calcular pesos consistentes con el entrenamiento
+    weights = np.log1p(y_train)
+    weights = weights.replace([np.inf, -np.inf], 0)
+    weights = weights.fillna(0)
+    weights = weights.clip(lower=1e-3)
+    
+    # Crear Dataset con pesos
+    train_data = lgb.Dataset(
+        X_train, 
+        label=y_train,
+        weight=weights,  # ¡Incluir los pesos aquí!
+        free_raw_data=False
+    )
+    
+    # Número de repeticiones con semillas distintas
+    best_params = levantar_hiperparametros(version)
+    best_params = {
+        "num_leaves": 70,
+        "learning_rate": 0.21452954913241762,
+        "feature_fraction": 0.6011117946918656,
+        "bagging_fraction": 0.8822410395406273,
+        "bagging_freq": 3,
+        "lambda_l1": 3.7977385894547785e-07,
+        "lambda_l2": 3.767016562854649e-06,
+        "min_child_samples": 25,
+        "max_depth": 8,
+        "max_bin": 425,
+        "min_data_in_leaf": 52,
+        "extra_trees": True,
+        "early_stopping_rounds": 29,
+        "path_smooth": 0.2111835531171458,  # Nuevo hiperparámetro
+        "min_gain_to_split": 0.12638417820570863,  # Nuevo hiperparámetro
+        "objective": "regression",
+        "metric": "rmse",
+        "boosting_type": "gbdt",
+        "verbosity": -1
+    }
+    
+    
+    seeds = [42, 101, 202, 303, 404]
+    predictions = []
+    feature_importances = []
+    feature_names = X_train.columns.tolist()
+
+    for seed in seeds:
+        params = best_params.copy()
+        params['seed'] = seed
+        
+        model = lgb.train(
+            params,
+            train_data,  # Usar el dataset con pesos
+            num_boost_round=1000,
+            valid_sets=[train_data],
+            callbacks=[
+                lgb.early_stopping(50), 
+                lgb.log_evaluation(0)
+            ]
+        )
+        
+        y_pred = model.predict(X_test)
+        predictions.append(y_pred)
+        
+        importance = model.feature_importance(importance_type='gain')
+        feature_importances.append(importance)
+
+    # Promediar predicciones
+    final_prediction = np.mean(predictions, axis=0)   
+    
+    # Crear DataFrame con IDs y predicciones
+    result_df = test[['periodo', 'product_id', 'target']].copy()
+    result_df['pred'] = final_prediction
+    
+    # Procesar feature importance
+    avg_importance = np.mean(feature_importances, axis=0)
+    importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': avg_importance
+    }).sort_values('importance', ascending=False)
+    
+    importance_dict = importance_df.set_index('feature')['importance'].to_dict()
+    with open(f'./feature_importance/{version}.json', 'w') as f:
+        json.dump(importance_dict, f, indent=4)
+    
+    return result_df
+
+
+
     
 def semillerio_en_prediccion_v2(params, train_data, val_data, X_test):
     """
