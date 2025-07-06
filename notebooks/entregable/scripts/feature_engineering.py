@@ -681,6 +681,48 @@ def get_prophet_features(df, target_col):
 
 
 
+def calcular_diferencia_con_medias_moviles(df, col='tn', grupo='product_id', ventana_max=12):
+    """
+    Calcula la diferencia entre el valor actual de una columna y su media móvil pasada,
+    para ventanas de 1 a ventana_max. La operación es: actual - media_movil.
+    
+    Parámetros:
+        df: DataFrame de entrada, debe estar ordenado por fecha dentro de cada grupo
+        col: nombre de la columna numérica (ej. 'tn')
+        grupo: nombre de la columna de agrupamiento (ej. 'product_id')
+        ventana_max: máxima ventana de media móvil (ej. 5)
+    
+    Devuelve:
+        El DataFrame original con nuevas columnas: delta_media_movil_1, ..., delta_media_movil_n
+    """
+    df = df.sort_values([grupo, 'periodo'])  # Asegura orden temporal dentro del grupo
+    
+    for ventana in range(1, ventana_max + 1):
+        media_col = f'{col}media{ventana}'
+        delta_col = f'{col}menos_media{ventana}'
+        
+        df[media_col] = df.groupby(grupo)[col].transform(lambda x: x.shift(1).rolling(ventana).mean())
+        df[delta_col] = df[col] - df[media_col]
+    
+    return df
+
+
+def calcular_ratios_con_medias_moviles(df, col='tn', grupo='product_id', ventana_max=12):
+    """
+    Calcula el ratio entre el valor actual de una columna y su media móvil pasada.
+    """
+    df = df.sort_values([grupo, 'periodo'])  # Asegura orden temporal dentro del grupo
+    
+    for ventana in range(1, ventana_max + 1):
+        media_col = f'{col}media{ventana}'
+        delta_col = f'{col}ratio_media{ventana}'
+        
+        df[media_col] = df.groupby(grupo)[col].transform(lambda x: x.shift(1).rolling(ventana).mean())
+        df[delta_col] = df[col] / df[media_col]
+    
+    return df
+
+
 
 def get_prophet_features_v2(df, target_col):
     """

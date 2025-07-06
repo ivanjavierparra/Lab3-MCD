@@ -243,7 +243,7 @@ def optimizar_con_optuna_con_semillerio(train, semillas=[42, 101, 202, 303, 404]
 
 
 
-def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 404], version="v1", n_trials=100):
+def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 404], version="v1", n_trials=100, pesos="log"):
     """
     Optimiza hiperparámetros de LightGBM con Optuna usando semillerío.
     Guarda trials en SQLite y permite visualización en tiempo real.
@@ -269,10 +269,14 @@ def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 4
     X = train.drop(columns=[*datetime_cols, 'target'])
     y = train['target']
 
-    weights = np.log1p(y)
-    weights = weights.replace([np.inf, -np.inf], 0)
-    weights = weights.fillna(0)
-    weights = weights.clip(lower=1e-3)
+    if( pesos == "log"):
+        weights = np.log1p(y)
+        weights = weights.replace([np.inf, -np.inf], 0)
+        weights = weights.fillna(0)
+        weights = weights.clip(lower=1e-3)
+    else:
+        weights = (y / (y.max() + 1e-10))  # Pequeño épsilon para evitar división por cero
+        weights = weights.replace([np.inf, -np.inf], 0).fillna(0).clip(lower=1e-3)
     # try:
     #     weights = y / y.max()  # Fórmula base  ########### Probar tambien: np.log1p(y)
     #     weights = weights.replace([np.inf, -np.inf], 0)  # Manejo de infinitos
@@ -341,7 +345,7 @@ def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 4
                     num_boost_round=1000,
                     valid_sets=[val_data],
                     callbacks=[
-                        lgb.early_stopping(stopping_rounds=10, verbose=False),
+                        lgb.early_stopping(stopping_rounds=20, verbose=False),
                         lgb.log_evaluation(0)
                     ]
                 )
@@ -375,7 +379,7 @@ def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 4
         print("Advertencia: No se pudo conectar a SQLite. Usando almacenamiento en memoria")
 
     # Ejecutar optimización
-    study.optimize(objective, n_trials=n_trials, callbacks=[print_best_trial], timeout=3600*3)
+    study.optimize(objective, n_trials=n_trials, callbacks=[print_best_trial], timeout=3600*24) # Límite de tiempo de 24 horas
 
     # Guardar resultados y visualizaciones
     if isinstance(study._storage, optuna.storages.InMemoryStorage):
@@ -476,7 +480,7 @@ def semillerio_en_prediccion(train, test, version="v1"):
     }).sort_values('importance', ascending=False)
     
     # 3. Guardar a CSV
-    # importance_df.to_csv('feature_importance.csv', index=False)
+    # importance_df.to_csv('feature_isemillerio_en_prediccion_con_pesosmportance.csv', index=False)
     
     # 4. Guardar a JSON (opcional)
     importance_dict = importance_df.set_index('feature')['importance'].to_dict()
@@ -487,7 +491,7 @@ def semillerio_en_prediccion(train, test, version="v1"):
     return result_df
     
 
-def semillerio_en_prediccion_con_pesos(train, test, version="v1"):
+def semillerio_en_prediccion_con_pesos(train, test, version="v1", pesos="log"):
     """
     Entrena un modelo LightGBM con múltiples semillas y promedia las predicciones.
     Versión que incluye pesos consistentes con el entrenamiento original.
@@ -499,11 +503,18 @@ def semillerio_en_prediccion_con_pesos(train, test, version="v1"):
     X_test = test.drop(columns=[*datetime_cols, 'target'])
     
     # Calcular pesos consistentes con el entrenamiento
-    weights = np.log1p(y_train)
-    weights = weights.replace([np.inf, -np.inf], 0)
-    weights = weights.fillna(0)
-    weights = weights.clip(lower=1e-3)
-    
+    if( pesos == "log" ):
+        weights = np.log1p(y_train)
+        weights = weights.replace([np.inf, -np.inf], 0)
+        weights = weights.fillna(0)
+        weights = weights.clip(lower=1e-3)
+    else:
+        y_max = y_train.max()
+        # weights = y_train / (y_max + 1e-10) if y_max > 0 else np.ones_like(y_train)    
+        weights = (y_train / (y_max + 1e-10))  # Pequeño épsilon para evitar división por cero
+        weights = weights.replace([np.inf, -np.inf], 0).fillna(0).clip(lower=1e-3)
+        
+        
     # Crear Dataset con pesos
     train_data = lgb.Dataset(
         X_train, 
@@ -514,27 +525,27 @@ def semillerio_en_prediccion_con_pesos(train, test, version="v1"):
     
     # Número de repeticiones con semillas distintas
     best_params = levantar_hiperparametros(version)
-    best_params = {
-        "num_leaves": 70,
-        "learning_rate": 0.21452954913241762,
-        "feature_fraction": 0.6011117946918656,
-        "bagging_fraction": 0.8822410395406273,
-        "bagging_freq": 3,
-        "lambda_l1": 3.7977385894547785e-07,
-        "lambda_l2": 3.767016562854649e-06,
-        "min_child_samples": 25,
-        "max_depth": 8,
-        "max_bin": 425,
-        "min_data_in_leaf": 52,
-        "extra_trees": True,
-        "early_stopping_rounds": 29,
-        "path_smooth": 0.2111835531171458,  # Nuevo hiperparámetro
-        "min_gain_to_split": 0.12638417820570863,  # Nuevo hiperparámetro
-        "objective": "regression",
-        "metric": "rmse",
-        "boosting_type": "gbdt",
-        "verbosity": -1
-    }
+    # best_params = {
+    #     "num_leaves": 70,
+    #     "learning_rate": 0.21452954913241762,
+    #     "feature_fraction": 0.6011117946918656,
+    #     "bagging_fraction": 0.8822410395406273,
+    #     "bagging_freq": 3,
+    #     "lambda_l1": 3.7977385894547785e-07,
+    #     "lambda_l2": 3.767016562854649e-06,
+    #     "min_child_samples": 25,
+    #     "max_depth": 8,
+    #     "max_bin": 425,
+    #     "min_data_in_leaf": 52,
+    #     "extra_trees": True,
+    #     "early_stopping_rounds": 29,
+    #     "path_smooth": 0.2111835531171458,  # Nuevo hiperparámetro
+    #     "min_gain_to_split": 0.12638417820570863,  # Nuevo hiperparámetro
+    #     "objective": "regression",
+    #     "metric": "rmse",
+    #     "boosting_type": "gbdt",
+    #     "verbosity": -1
+    # }
     
     
     seeds = [42, 101, 202, 303, 404]
