@@ -1,0 +1,21 @@
+{
+    "num_leaves": 80,
+    "learning_rate": 0.12135983719521656,
+    "feature_fraction": 0.9178581456448356,
+    "bagging_fraction": 0.8121933117224753,
+    "bagging_freq": 8,
+    "lambda_l1": 0.0006418643074595679,
+    "lambda_l2": 0.0001582574379358235,
+    "min_child_samples": 39,
+    "max_depth": 8,
+    "max_bin": 492,
+    "min_data_in_leaf": 66,
+    "extra_trees": true,
+    "early_stopping_rounds": 27,
+    "path_smooth": 0.9559291326495888,
+    "min_gain_to_split": 0.4900967110055443,
+    "objective": "regression",
+    "metric": "rmse",
+    "boosting_type": "gbdt",
+    "verbosity": -1
+}
