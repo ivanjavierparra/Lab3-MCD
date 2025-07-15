@@ -379,7 +379,7 @@ def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 4
         print("Advertencia: No se pudo conectar a SQLite. Usando almacenamiento en memoria")
 
     # Ejecutar optimización
-    study.optimize(objective, n_trials=n_trials, callbacks=[print_best_trial], timeout=3600*24) # Límite de tiempo de 24 horas
+    study.optimize(objective, n_trials=n_trials, callbacks=[print_best_trial], timeout=3600*24*3) # Límite de tiempo de 3 días
 
     # Guardar resultados y visualizaciones
     if isinstance(study._storage, optuna.storages.InMemoryStorage):
@@ -413,6 +413,178 @@ def optimizar_con_optuna_con_semillerio_db(train, semillas=[42, 101, 202, 303, 4
     return study, best_params
 
 
+
+
+
+def optimizar_con_optuna_sin_semillerio_db(train, semillas=[42, 101, 202, 303, 404], version="v1", n_trials=100, pesos="log"):
+    """
+    Optimiza hiperparámetros de LightGBM con Optuna usando semillerío.
+    Guarda trials en SQLite y permite visualización en tiempo real.
+    
+    Args:
+        train: DataFrame con datos de entrenamiento
+        semillas: Lista de semillas para el semillerío
+        version: Identificador del estudio
+        n_trials: Número de trials de optimización
+    """
+    semillas = [42]
+    # Configuración de la base de datos SQLite
+    db_name = f"optuna_studies_{version}.db"
+    storage_url = f"sqlite:///{db_name}"
+    
+    # Instrucciones para usar el dashboard:
+    print("\nPara visualizar los resultados en tiempo real:")
+    print("1. Abre otra terminal y ejecuta:")
+    print(f"   optuna-dashboard sqlite:///optuna_studies_{version}.db")
+    print("2. Abre en tu navegador: http://127.0.0.1:8080/")
+    
+    # Preparación de datos
+    datetime_cols = train.select_dtypes(include=['datetime', 'datetime64']).columns.tolist()
+    X = train.drop(columns=[*datetime_cols, 'target'])
+    y = train['target']
+
+    if( pesos == "log"):
+        weights = np.log1p(y)
+        weights = weights.replace([np.inf, -np.inf], 0)
+        weights = weights.fillna(0)
+        weights = weights.clip(lower=1e-3)
+    else:
+        weights = (y / (y.max() + 1e-10))  # Pequeño épsilon para evitar división por cero
+        weights = weights.replace([np.inf, -np.inf], 0).fillna(0).clip(lower=1e-3)
+    # try:
+    #     weights = y / y.max()  # Fórmula base  ########### Probar tambien: np.log1p(y)
+    #     weights = weights.replace([np.inf, -np.inf], 0)  # Manejo de infinitos
+    #     weights = weights.fillna(0)  # Manejo de NaNs
+    # except ZeroDivisionError:
+    #     weights = np.ones(len(y))  # Fallback a pesos unitarios
+
+    # Configuración de validación cruzada temporal
+    tscv = TimeSeriesSplit(n_splits=5, test_size=1, gap=1)
+
+    def objective(trial):
+        base_params = {
+            'objective': 'regression',
+            'metric': 'rmse',
+            'boosting_type': 'gbdt',
+            'num_leaves': trial.suggest_int('num_leaves', 15, 100),  # Reducido de 200 a 100
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'feature_fraction': trial.suggest_float('feature_fraction', 0.6, 1.0),  # Aumentado mínimo a 0.6
+            'bagging_fraction': trial.suggest_float('bagging_fraction', 0.7, 1.0),  # Aumentado mínimo a 0.7
+            'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
+            'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 10.0, log=True),
+            'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 10.0, log=True),
+            'min_child_samples': trial.suggest_int('min_child_samples', 10, 50),  # Aumentado mínimo a 10
+            'max_depth': trial.suggest_int('max_depth', 3, 10),  # Reducido de 15 a 10
+            'max_bin': trial.suggest_int('max_bin', 100, 500),
+            'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 20, 100),  # Aumentado mínimo a 20
+            'extra_trees': trial.suggest_categorical('extra_trees', [True, False]),
+            'verbosity': -1,
+            
+            # Hiperparámetros adicionales recomendados:
+            'early_stopping_rounds': trial.suggest_int('early_stopping_rounds', 10, 50),  # Nuevo
+            'path_smooth': trial.suggest_float('path_smooth', 0.0, 1.0),  # Nuevo (suaviza divisiones)
+            'min_gain_to_split': trial.suggest_float('min_gain_to_split', 0.0, 0.5),  # Nuevo
+        }
+
+        rmse_scores_fold = []
+
+        for train_idx, val_idx in tscv.split(X):
+            X_train_fold, X_val_fold = X.iloc[train_idx], X.iloc[val_idx]
+            y_train_fold, y_val_fold = y.iloc[train_idx], y.iloc[val_idx]
+            w_train_fold, w_val_fold = weights.iloc[train_idx], weights.iloc[val_idx]
+            
+            rmse_seeds = []
+
+            for seed in semillas:
+                params = base_params.copy()
+                params['seed'] = seed
+
+                # Crear datasets con pesos
+                train_data = lgb.Dataset(
+                    X_train_fold, 
+                    label=y_train_fold,
+                    weight=w_train_fold,  # Aquí se incluyen los pesos de entrenamiento
+                    free_raw_data=False
+                )
+                val_data = lgb.Dataset(
+                    X_val_fold, 
+                    label=y_val_fold,
+                    weight=w_val_fold,    # Aquí se incluyen los pesos de validación
+                    reference=train_data
+                )
+
+                model = lgb.train(
+                    params,
+                    train_data,
+                    num_boost_round=1000,
+                    valid_sets=[val_data],
+                    callbacks=[
+                        lgb.early_stopping(stopping_rounds=20, verbose=False),
+                        lgb.log_evaluation(0)
+                    ]
+                )
+
+                y_pred = model.predict(X_val_fold)
+                rmse = mean_squared_error(y_val_fold, y_pred, sample_weight=w_val_fold)  # RMSE ponderado
+                rmse_seeds.append(rmse)
+
+            rmse_scores_fold.append(np.mean(rmse_seeds))
+
+        return np.mean(rmse_scores_fold)
+
+    def print_best_trial(study, trial):
+        print(f"Mejor trial hasta ahora: RMSE={study.best_value:.6f}, Parámetros={study.best_trial.params}")
+
+    # Crear estudio con almacenamiento en SQLite
+    try:
+        study = optuna.create_study(
+            direction='minimize',
+            study_name=f"lightgbm_optimization_{version}",
+            storage=storage_url,
+            load_if_exists=True,
+            pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=5),
+            sampler=optuna.samplers.TPESampler(seed=42))
+    except sqlite3.OperationalError:
+        # Si falla la conexión, crear estudio en memoria
+        study = optuna.create_study(
+            direction='minimize',
+            pruner=MedianPruner(n_startup_trials=10, n_warmup_steps=5),
+            sampler=optuna.samplers.TPESampler(seed=42))
+        print("Advertencia: No se pudo conectar a SQLite. Usando almacenamiento en memoria")
+
+    # Ejecutar optimización
+    study.optimize(objective, n_trials=n_trials, callbacks=[print_best_trial], timeout=3600*24*3) # Límite de tiempo de 3 días
+
+    # Guardar resultados y visualizaciones
+    if isinstance(study._storage, optuna.storages.InMemoryStorage):
+        print("No se guardaron los trials al no usar SQLite")
+    else:
+        print(f"Estudio guardado en: {storage_url}")
+        
+        # Generar visualizaciones
+        fig_history = plot_optimization_history(study)
+        fig_params = plot_param_importances(study)
+        fig_history.write_image(f"optimization_history_{version}.png")
+        fig_params.write_image(f"param_importances_{version}.png")
+
+    print("\nMejores hiperparámetros encontrados:")
+    for key, value in study.best_params.items():
+        print(f"{key}: {value}")
+
+    best_params = study.best_params.copy()
+    best_params.update({
+        'objective': 'regression',
+        'metric': 'rmse',
+        'boosting_type': 'gbdt',
+        'verbosity': -1
+    })
+
+    guardar_hiperparametros(best_params, version)  # Descomenta si tienes esta función
+    
+    
+ 
+    
+    return study, best_params
 
 
 
@@ -526,21 +698,21 @@ def semillerio_en_prediccion_con_pesos(train, test, version="v1", pesos="log"):
     # Número de repeticiones con semillas distintas
     best_params = levantar_hiperparametros(version)
     # best_params = {
-    #     "num_leaves": 70,
-    #     "learning_rate": 0.21452954913241762,
-    #     "feature_fraction": 0.6011117946918656,
-    #     "bagging_fraction": 0.8822410395406273,
-    #     "bagging_freq": 3,
-    #     "lambda_l1": 3.7977385894547785e-07,
-    #     "lambda_l2": 3.767016562854649e-06,
-    #     "min_child_samples": 25,
+    #     "num_leaves": 81,
+    #     "learning_rate": 0.2451931266447765,
+    #     "feature_fraction": 0.9374080714486916,
+    #     "bagging_fraction": 0.9805517118978127,
+    #     "bagging_freq": 4,
+    #     "lambda_l1": 3.1119919722196896e-06,
+    #     "lambda_l2": 1.3192716280818084e-06,
+    #     "min_child_samples": 32,
     #     "max_depth": 8,
-    #     "max_bin": 425,
-    #     "min_data_in_leaf": 52,
-    #     "extra_trees": True,
-    #     "early_stopping_rounds": 29,
-    #     "path_smooth": 0.2111835531171458,  # Nuevo hiperparámetro
-    #     "min_gain_to_split": 0.12638417820570863,  # Nuevo hiperparámetro
+    #     "max_bin": 500,
+    #     "min_data_in_leaf": 33,
+    #     "extra_trees": False,
+    #     "early_stopping_rounds": 24,
+    #     "path_smooth": 0.9755895661202072,  # Nuevo hiperparámetro
+    #     "min_gain_to_split": 0.02152465296961507,  # Nuevo hiperparámetro
     #     "objective": "regression",
     #     "metric": "rmse",
     #     "boosting_type": "gbdt",
@@ -1132,7 +1304,7 @@ def promedio_12_meses_780p():
     df = pd.read_csv("./datasets/periodo_x_producto_con_target.csv", sep=',', encoding='utf-8')
     df = df[df['periodo'] >= 201901]  # Filtrar desde 201901
     
-    productos_ok = pd.read_csv("https://storage.googleapis.com/open-courses/austral2025-af91/labo3v/product_id_apredecir201912.txt", sep="\t")
+    productos_ok = pd.read_csv("../../data/raw/product_id_apredecir201912.csv", sep="\t")
 
     df = df.merge(productos_ok, on='product_id', how='inner')
     
