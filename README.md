@@ -4,7 +4,12 @@ Repositorio para la Materia Laboratorio de Implementación III de la Maestría e
 ##### Alumno
 - Iván Parra
 
-##### Carpetas
+# Explicación de los Experimentos
+He armado un documento con los experimentos desarrollados:
+
+https://docs.google.com/document/d/1j-4Top84eZzeVcQk8803WTq0aunrfTNOj0Ikmp90N4g/edit?usp=sharing
+
+# Carpetas
 - data: contiene las datasets de la competencia y los generados por nosotros.
   - raw: contiene los datasets de la competencia.
   - preprocessed: contiene todos los datasets generados por nosotros. 
