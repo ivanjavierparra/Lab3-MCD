@@ -35,3 +35,11 @@ Para generar este dataset hay que ejecutar los siguientes notebook en orden:
 1. notebooks\entregable\dataset.ipynb
 2. notebooks\entregable\target.ipynb
 
+##### Dataset "periodo_x_producto_con_target_transformado.csv"
+Para generar este dataset hay que ejecutar los siguientes notebook en orden:
+1. notebooks\entregable\dataset.ipynb
+2. notebooks\entregable\target.ipynb
+3. notebooks\entregable\preprocesamiento.ipynb
+   
+
+
