@@ -27,6 +27,9 @@ Repositorio para la Materia Laboratorio de Implementación III de la Maestría e
 - scripts: código genérico usado para crear datasets, promediar csv, etc.
 
 # Generación de Datasets
+Los dejamos disponibles en: https://drive.google.com/drive/folders/1QQaqKNUOY4trYqEmNPVKtfyCGxJQqhZb?usp=drive_link
+A continuación se indica como fueron generados:
+
 ##### Dataset "base.csv"
 Para generar este dataset que se usa en muchos experimentos hay que ejecutar el notebook: ./scripts/generador_dataset_sellin.ipynb
 
